@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+
+    <title>Image Carousel Widget</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: transparent;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      image-carousel {
+        display: block;
+        width: 100%;
+        height: 100%;
+        max-width: 720px;
+        max-height: 480px;
+      }
+    </style>
+  </head>
+  <body>
+    <image-carousel
+      data-limit="10"
+      data-interval="3000"
+      data-autoplay="true"
+    ></image-carousel>
+
+    <script>
+      (function () {
+        const MSG_SOURCE_OUT = "image-carousel";
+        const MSG_SOURCE_IN = "image-carousel-control";
+        const API_URL = "https://jsonplaceholder.typicode.com/photos";
+        const FALLBACK_IMG = (title) =>
+          "https://placehold.co/600x400?text=" +
+          encodeURIComponent(title || "image");
+
+        class ImageCarousel extends HTMLElement {
+          constructor() {
+            super();
+            this.attachShadow({ mode: "open" });
+            this._images = [];
+            this._index = 0;
+            this._timer = null;
+            this._interval = 3000;
+            this._autoplayOn = true;
+            this._dragStartX = null;
+            this._dragDeltaX = 0;
+            this._dragStartTime = 0;
+            this._dragging = false;
+            this._pointerId = null;
+            this._onMessage = this._onMessage.bind(this);
+          }
+
+          connectedCallback() {
+            this._interval = parseInt(this.dataset.interval, 10) || 3000;
+            this._autoplayOn = this.dataset.autoplay !== "false";
+            const limit = parseInt(this.dataset.limit, 10) || 10;
+
+            this._renderShell();
+            window.addEventListener("message", this._onMessage);
+            this._loadImages(limit);
+          }
+
+          disconnectedCallback() {
+            window.removeEventListener("message", this._onMessage);
+            this._stopAutoplay();
+          }
+
+          // ---------- Rendering ----------
+
+          _renderShell() {
+            this.shadowRoot.innerHTML = `
+        <style>
+          :host {
+            display: block;
+            position: relative;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #111;
+            border-radius: 12px;
+            -webkit-tap-highlight-color: transparent;
+            user-select: none;
+          }
+          .viewport {
+            position: absolute;
+            inset: 0;
+            overflow: hidden;
+            touch-action: pan-y;
+            cursor: grab;
+          }
+          .viewport:active { cursor: grabbing; }
+          .track {
+            display: flex;
+            width: 100%;
+            height: 100%;
+            transition: transform 350ms ease;
+            will-change: transform;
+          }
+          .slide {
+            flex: 0 0 100%;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #1a1a1a;
+            overflow: hidden;
+            position: relative;
+          }
+          .slide img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+            cursor: pointer;
+            pointer-events: auto;
+          }
+          .slide .caption {
+            position: absolute;
+            left: 0; right: 0; bottom: 0;
+            padding: 12px 16px;
+            background: linear-gradient(transparent, rgba(0,0,0,0.65));
+            color: #fff;
+            font-size: 13px;
+            line-height: 1.3;
+            text-align: left;
+            pointer-events: none;
+          }
+          .nav {
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            border: none;
+            background: rgba(0,0,0,0.45);
+            color: #fff;
+            font-size: 22px;
+            line-height: 40px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0;
+            transition: background 150ms ease;
+            z-index: 2;
+          }
+          .nav:hover { background: rgba(0,0,0,0.7); }
+          .nav:active { transform: translateY(-50%) scale(0.94); }
+          .nav.prev { left: 12px; }
+          .nav.next { right: 12px; }
+          .dots {
+            position: absolute;
+            left: 0; right: 0; bottom: 10px;
+            display: flex;
+            gap: 6px;
+            justify-content: center;
+            z-index: 2;
+          }
+          .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.45);
+            border: none;
+            padding: 0;
+            cursor: pointer;
+            transition: background 150ms ease, transform 150ms ease;
+          }
+          .dot.active {
+            background: #fff;
+            transform: scale(1.25);
+          }
+          .status {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #aaa;
+            font-size: 14px;
+            text-align: center;
+            padding: 16px;
+          }
+          .skeleton {
+            background: linear-gradient(90deg, #1a1a1a 0%, #2a2a2a 50%, #1a1a1a 100%);
+            background-size: 200% 100%;
+            animation: shimmer 1.4s infinite;
+            position: absolute;
+            inset: 0;
+          }
+          @keyframes shimmer {
+            0% { background-position: 200% 0; }
+            100% { background-position: -200% 0; }
+          }
+          .hidden { display: none !important; }
+        </style>
+        <div class="viewport">
+          <div class="skeleton" id="skeleton"></div>
+          <div class="track" id="track"></div>
+          <div class="status hidden" id="status"></div>
+        </div>
+        <button class="nav prev" id="prevBtn" aria-label="Anterior">‹</button>
+        <button class="nav next" id="nextBtn" aria-label="Siguiente">›</button>
+        <div class="dots" id="dots"></div>
+      `;
+
+            const root = this.shadowRoot;
+            root
+              .getElementById("prevBtn")
+              .addEventListener("click", () => this.prev(true));
+            root
+              .getElementById("nextBtn")
+              .addEventListener("click", () => this.next(true));
+
+            const viewport = root.querySelector(".viewport");
+            if (window.PointerEvent) {
+              viewport.addEventListener("pointerdown", (e) =>
+                this._onDragStart(e),
+              );
+              viewport.addEventListener("pointermove", (e) =>
+                this._onDragMove(e),
+              );
+              viewport.addEventListener("pointerup", (e) => this._onDragEnd(e));
+              viewport.addEventListener("pointercancel", (e) =>
+                this._onDragEnd(e),
+              );
+              viewport.addEventListener("pointerleave", (e) =>
+                this._onDragEnd(e),
+              );
+            } else {
+              viewport.addEventListener(
+                "touchstart",
+                (e) => this._onDragStart(e.touches[0]),
+                { passive: true },
+              );
+              viewport.addEventListener(
+                "touchmove",
+                (e) => this._onDragMove(e.touches[0]),
+                { passive: true },
+              );
+              viewport.addEventListener("touchend", () => this._onDragEnd());
+              viewport.addEventListener("touchcancel", () => this._onDragEnd());
+            }
+          }
+
+          _renderSlides() {
+            const track = this.shadowRoot.getElementById("track");
+            const dots = this.shadowRoot.getElementById("dots");
+            track.innerHTML = "";
+            dots.innerHTML = "";
+
+            this._images.forEach((img, i) => {
+              const slide = document.createElement("div");
+              slide.className = "slide";
+
+              const el = document.createElement("img");
+              el.src = img.url;
+              el.alt = img.title || "";
+              el.loading = "lazy";
+              el.addEventListener("error", () => {
+                if (el.dataset.fallback !== "1") {
+                  el.dataset.fallback = "1";
+                  el.src = FALLBACK_IMG(img.title);
+                }
+              });
+              el.addEventListener("click", () => {
+                if (this._suppressNextClick) {
+                  this._suppressNextClick = false;
+                  return;
+                }
+                this._emit("imageClick", {
+                  index: i,
+                  id: img.id,
+                  url: img.url,
+                  title: img.title,
+                });
+              });
+              el.addEventListener("dragstart", (e) => e.preventDefault());
+              slide.appendChild(el);
+
+              if (img.title) {
+                const cap = document.createElement("div");
+                cap.className = "caption";
+                cap.textContent = img.title;
+                slide.appendChild(cap);
+              }
+
+              track.appendChild(slide);
+
+              const dot = document.createElement("button");
+              dot.className = "dot" + (i === 0 ? " active" : "");
+              dot.setAttribute("aria-label", "Ir al slide " + (i + 1));
+              dot.addEventListener("click", () => this.goto(i, true));
+              dots.appendChild(dot);
+            });
+
+            this._updateTrack();
+          }
+
+          _updateTrack() {
+            const track = this.shadowRoot.getElementById("track");
+            if (!track) return;
+            track.style.transform = `translateX(-${this._index * 100}%)`;
+            const dots = this.shadowRoot.querySelectorAll(".dot");
+            dots.forEach((d, i) =>
+              d.classList.toggle("active", i === this._index),
+            );
+          }
+
+          _showStatus(text) {
+            const s = this.shadowRoot.getElementById("status");
+            s.textContent = text;
+            s.classList.remove("hidden");
+          }
+
+          _hideSkeleton() {
+            const s = this.shadowRoot.getElementById("skeleton");
+            if (s) s.classList.add("hidden");
+          }
+
+          // ---------- Data ----------
+
+          async _loadImages(limit) {
+            try {
+              const res = await fetch(`${API_URL}?_limit=${limit}`);
+              if (!res.ok) throw new Error("HTTP " + res.status);
+              const data = await res.json();
+              if (!Array.isArray(data) || data.length === 0) {
+                throw new Error("API devolvió datos vacíos");
+              }
+              this._images = data.map((p) => ({
+                id: p.id,
+                title: p.title,
+                url: p.thumbnailUrl || p.url,
+                thumbnailUrl: p.thumbnailUrl,
+              }));
+              this._hideSkeleton();
+              this._renderSlides();
+              this._emit("ready", { count: this._images.length });
+              if (this._autoplayOn) this._startAutoplay();
+            } catch (err) {
+              this._hideSkeleton();
+              this._showStatus("No se pudieron cargar las imágenes");
+              this._emit("error", {
+                message: String((err && err.message) || err),
+              });
+            }
+          }
+
+          // ---------- Navigation ----------
+
+          next(userInitiated) {
+            if (!this._images.length) return;
+            this._index = (this._index + 1) % this._images.length;
+            this._updateTrack();
+            if (userInitiated) this._restartAutoplayIfOn();
+          }
+
+          prev(userInitiated) {
+            if (!this._images.length) return;
+            this._index =
+              (this._index - 1 + this._images.length) % this._images.length;
+            this._updateTrack();
+            if (userInitiated) this._restartAutoplayIfOn();
+          }
+
+          goto(i, userInitiated) {
+            if (!this._images.length) return;
+            const n = this._images.length;
+            this._index = ((i % n) + n) % n;
+            this._updateTrack();
+            if (userInitiated) this._restartAutoplayIfOn();
+          }
+
+          // ---------- Autoplay ----------
+
+          _startAutoplay() {
+            this._stopAutoplay();
+            this._autoplayOn = true;
+            this._timer = setInterval(() => this.next(false), this._interval);
+          }
+
+          _stopAutoplay() {
+            if (this._timer) {
+              clearInterval(this._timer);
+              this._timer = null;
+            }
+          }
+
+          play() {
+            this._autoplayOn = true;
+            this._startAutoplay();
+          }
+          pause() {
+            this._autoplayOn = false;
+            this._stopAutoplay();
+          }
+
+          _restartAutoplayIfOn() {
+            if (this._autoplayOn) this._startAutoplay();
+          }
+
+          // ---------- Swipe / drag ----------
+
+          _onDragStart(ev) {
+            if (!ev || ev.clientX == null) return;
+            if (ev.pointerType === "mouse" && ev.button !== 0) return;
+            this._pointerDown = true;
+            this._dragging = false;
+            this._dragStartX = ev.clientX;
+            this._dragDeltaX = 0;
+            this._dragStartTime = Date.now();
+            this._pointerId = ev.pointerId != null ? ev.pointerId : null;
+          }
+
+          _onDragMove(ev) {
+            if (
+              !this._pointerDown ||
+              this._dragStartX == null ||
+              !ev ||
+              ev.clientX == null
+            )
+              return;
+            const dx = ev.clientX - this._dragStartX;
+            this._dragDeltaX = dx;
+
+            if (!this._dragging && Math.abs(dx) >= 6) {
+              this._dragging = true;
+              const track = this.shadowRoot.getElementById("track");
+              if (track) track.style.transition = "none";
+              const viewport = this.shadowRoot.querySelector(".viewport");
+              if (
+                viewport &&
+                this._pointerId != null &&
+                viewport.setPointerCapture
+              ) {
+                try {
+                  viewport.setPointerCapture(this._pointerId);
+                } catch (_) {}
+              }
+            }
+
+            if (this._dragging) {
+              const track = this.shadowRoot.getElementById("track");
+              if (!track) return;
+              const vw = track.getBoundingClientRect().width || 1;
+              const dragPct = (dx / vw) * 100;
+              const base = this._index * 100;
+              track.style.transform = `translateX(calc(-${base}% + ${dragPct.toFixed(2)}%))`;
+            }
+          }
+
+          _onDragEnd(ev) {
+            if (!this._pointerDown) return;
+            const wasDragging = this._dragging;
+            this._pointerDown = false;
+            this._dragging = false;
+
+            const viewport = this.shadowRoot.querySelector(".viewport");
+            if (
+              viewport &&
+              this._pointerId != null &&
+              viewport.releasePointerCapture
+            ) {
+              try {
+                viewport.releasePointerCapture(this._pointerId);
+              } catch (_) {}
+            }
+            this._pointerId = null;
+
+            if (!wasDragging) {
+              this._dragStartX = null;
+              this._dragDeltaX = 0;
+              this._dragStartTime = 0;
+              this._suppressNextClick = false;
+              return;
+            }
+
+            const track = this.shadowRoot.getElementById("track");
+            if (track) track.style.transition = "";
+
+            const dx = this._dragDeltaX;
+            const dt = Math.max(1, Date.now() - this._dragStartTime);
+            const velocity = Math.abs(dx) / dt;
+            const vw = track ? track.getBoundingClientRect().width : 0;
+            const distThreshold = Math.max(50, vw * 0.15);
+            const triggered = Math.abs(dx) > distThreshold || velocity > 0.5;
+            this._suppressNextClick = true;
+
+            if (triggered) {
+              if (dx < 0) this.next(true);
+              else this.prev(true);
+            } else {
+              this._updateTrack();
+            }
+
+            this._dragStartX = null;
+            this._dragDeltaX = 0;
+            this._dragStartTime = 0;
+          }
+
+          // ---------- postMessage I/O ----------
+
+          _onMessage(event) {
+            const data = event.data;
+            if (!data || typeof data !== "object") return;
+            if (data.source !== MSG_SOURCE_IN) return;
+
+            switch (data.type) {
+              case "next":
+                this.next(true);
+                break;
+              case "prev":
+                this.prev(true);
+                break;
+              case "play":
+                this.play();
+                break;
+              case "pause":
+                this.pause();
+                break;
+            }
+          }
+
+          _emit(type, payload) {
+            const msg = { source: MSG_SOURCE_OUT, type, payload };
+            const json = JSON.stringify(msg);
+            let delivered = false;
+            const tryCall = (fn) => {
+              try {
+                fn();
+                delivered = true;
+              } catch (_) {}
+            };
+
+            console.log("Emit:", msg);
+
+            // 1. iframe → parent window (Cordova / genérico)
+            if (window.parent && window.parent !== window) {
+              tryCall(() => window.parent.postMessage(msg, "*"));
+            }
+
+            // 2. React Native WebView
+            if (
+              window.ReactNativeWebView &&
+              typeof window.ReactNativeWebView.postMessage === "function"
+            ) {
+              tryCall(() => window.ReactNativeWebView.postMessage(json));
+            }
+
+            // 3. iOS WKWebView — handler esperado: "carousel"
+            const iosHandler =
+              window.webkit &&
+              window.webkit.messageHandlers &&
+              window.webkit.messageHandlers.carousel;
+            if (iosHandler && typeof iosHandler.postMessage === "function") {
+              tryCall(() => iosHandler.postMessage(msg));
+            }
+
+            // 4. Android WebView — nombres convencionales de @JavascriptInterface
+            ["Android", "AndroidBridge", "NativeBridge"].forEach((name) => {
+              const bridge = window[name];
+              if (bridge && typeof bridge.postMessage === "function") {
+                tryCall(() => bridge.postMessage(json));
+              }
+            });
+
+            // 5. Flutter — flutter_inappwebview y canales JavaScriptChannel comunes
+            if (
+              window.flutter_inappwebview &&
+              typeof window.flutter_inappwebview.callHandler === "function"
+            ) {
+              tryCall(() =>
+                window.flutter_inappwebview.callHandler("carousel", msg),
+              );
+            }
+            ["FlutterBridge", "FlutterWebView", "Carousel"].forEach((name) => {
+              const bridge = window[name];
+              if (bridge && typeof bridge.postMessage === "function") {
+                tryCall(() => bridge.postMessage(json));
+              }
+            });
+
+            // 6. Standalone / debug — dispatch local event
+            if (!delivered) {
+              window.dispatchEvent(new MessageEvent("message", { data: msg }));
+            }
+          }
+        }
+
+        if (!customElements.get("image-carousel")) {
+          customElements.define("image-carousel", ImageCarousel);
+        }
+      })();
+    </script>
+  </body>
+</html>

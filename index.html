@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Demo — Carrusel en iframe (simula WebView)</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #0e0e10;
+        color: #e5e5e5;
+        min-height: 100vh;
+      }
+      .wrap {
+        max-width: 960px;
+        margin: 0 auto;
+        padding: 24px 20px 40px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 20px;
+        font-weight: 600;
+      }
+      p.sub {
+        margin: 0 0 24px;
+        color: #9a9a9a;
+        font-size: 13px;
+        line-height: 1.5;
+      }
+      .frame-wrap {
+        width: 100%;
+        aspect-ratio: 3 / 2;
+        background: #000;
+        border-radius: 12px;
+        overflow: hidden;
+        border: 1px solid #2a2a2a;
+      }
+      iframe {
+        width: 100%;
+        height: 100%;
+        border: 0;
+        display: block;
+        background: #000;
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin: 16px 0 20px;
+      }
+      button {
+        background: #1e1e22;
+        color: #e5e5e5;
+        border: 1px solid #303035;
+        padding: 8px 14px;
+        border-radius: 8px;
+        font-size: 13px;
+        cursor: pointer;
+        transition:
+          background 120ms ease,
+          border-color 120ms ease;
+      }
+      button:hover {
+        background: #26262b;
+        border-color: #3a3a42;
+      }
+      button:active {
+        transform: scale(0.97);
+      }
+      button.primary {
+        background: #2b5fff;
+        border-color: #2b5fff;
+      }
+      button.primary:hover {
+        background: #3d6eff;
+      }
+      .log-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        margin: 8px 0;
+      }
+      .log-header h2 {
+        font-size: 14px;
+        font-weight: 600;
+        margin: 0;
+        color: #bdbdbd;
+      }
+      .clear-btn {
+        padding: 4px 10px;
+        font-size: 12px;
+      }
+      pre#log {
+        background: #151518;
+        border: 1px solid #26262b;
+        border-radius: 8px;
+        padding: 12px;
+        margin: 0;
+        min-height: 120px;
+        max-height: 280px;
+        overflow: auto;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 12px;
+        line-height: 1.55;
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: #cfcfcf;
+      }
+      .log-line {
+        border-bottom: 1px dashed #26262b;
+        padding: 4px 0;
+      }
+      .log-line:last-child {
+        border-bottom: 0;
+      }
+      .log-type {
+        display: inline-block;
+        min-width: 90px;
+        font-weight: 600;
+      }
+      .log-type.ready {
+        color: #7ee787;
+      }
+      .log-type.error {
+        color: #ff7b72;
+      }
+      .log-type.imageClick {
+        color: #79c0ff;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Demo — Carrusel en iframe</h1>
+      <p class="sub">
+        Este HTML simula el rol de una "webview contenedora". Envía comandos al
+        iframe por
+        <code>postMessage</code> y muestra abajo los eventos que el widget emite
+        hacia afuera.
+      </p>
+
+      <div class="frame-wrap">
+        <iframe
+          id="frame"
+          src="https://juan-modo.github.io/widget-test/widget"
+          title="Image carousel"
+        ></iframe>
+      </div>
+
+      <div class="controls">
+        <button data-cmd="prev">‹ Prev</button>
+        <button data-cmd="next">Next ›</button>
+        <button data-cmd="play" class="primary">▶ Play</button>
+        <button data-cmd="pause">❚❚ Pause</button>
+      </div>
+
+      <div class="log-header">
+        <h2>Eventos recibidos del iframe</h2>
+        <button class="clear-btn" id="clearLog">Limpiar</button>
+      </div>
+      <pre id="log"></pre>
+    </div>
+
+    <script>
+      (function () {
+        const frame = document.getElementById("frame");
+        const log = document.getElementById("log");
+
+        document.querySelectorAll("button[data-cmd]").forEach((btn) => {
+          btn.addEventListener("click", () => {
+            const type = btn.dataset.cmd;
+            frame.contentWindow.postMessage(
+              { source: "image-carousel-control", type },
+              "*",
+            );
+            appendLog({ direction: "out", type, payload: null });
+          });
+        });
+
+        document.getElementById("clearLog").addEventListener("click", () => {
+          log.innerHTML = "";
+        });
+
+        window.addEventListener("message", (event) => {
+          const data = event.data;
+          if (!data || typeof data !== "object") return;
+          if (data.source !== "image-carousel") return;
+          appendLog({
+            direction: "in",
+            type: data.type,
+            payload: data.payload,
+          });
+        });
+
+        function appendLog({ direction, type, payload }) {
+          const line = document.createElement("div");
+          line.className = "log-line";
+          const arrow = direction === "out" ? "→" : "←";
+          const typeSpan = `<span class="log-type ${escapeAttr(type)}">${arrow} ${escapeHtml(type)}</span>`;
+          const body =
+            payload != null ? escapeHtml(JSON.stringify(payload)) : "";
+          const ts = new Date().toLocaleTimeString();
+          line.innerHTML = `<span style="color:#666">[${ts}]</span> ${typeSpan} ${body}`;
+          log.appendChild(line);
+          log.scrollTop = log.scrollHeight;
+        }
+
+        function escapeHtml(s) {
+          return String(s)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+        }
+        function escapeAttr(s) {
+          return String(s).replace(/[^a-zA-Z0-9_-]/g, "");
+        }
+      })();
+    </script>
+  </body>
+</html>
